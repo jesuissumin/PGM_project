@@ -14,6 +14,8 @@ library(caret)
 library(randomForest)
 library(ggm)
 library(WGCNA)
+library(GGMselect)
+library(glasso)
 options(strinsAsFactors=FALSE)
 allowWGCNAThreads()
 
@@ -21,12 +23,12 @@ allowWGCNAThreads()
 setwd("Users/suminlee/Desktop/Probability_Graph_Model/term_project/anal")
 
 # download .gz file and load the data
-#gse49710 <- getGEO("GSE49710",GSEMatrix=TRUE)
+gse49710 <- getGEO("GSE49710",GSEMatrix=TRUE)[[1]]
 
-gse49710 <- getGEO("./GSE49710_series_matrix.txt.gz", GSEMatrix=TRUE)[[1]]
+# gse49710 <- getGEO("./GSE49710_series_matrix.txt.gz", GSEMatrix=TRUE)[[1]]
 d_phenomenon <- pData(phenoData(gse49710))
 d_gene <- pData(featureData(gse49710))
-d_express <- as.data.frame(exprs(gse(gse49710)))
+d_express <- as.data.frame(exprs(gse49710))
 
 #========================
 # print basic information
@@ -106,8 +108,23 @@ top_n_importance <- head(sorted_gene$x, n= top_n)
 # Graph construction
 #========================
 d_express_top <- d_express_unique[c(top_n_id),]
-# ggm won't work....
-#glasso_ggm <- ggm(data, methods=c("glasso"), community=TRUE, plot=TRUE)
+
+# covariance matrix
+cov_mat = cov(d_express_unique)
+
+# ggm package
+# need adjacency matrix
+# glasso_ggm <- fitCovGraph(cov_mat)
+
+# glasso package
+inv_cov <- glasso(d_express, rho=0.1)
+
+# GGMselect package
+data_mat <- data.matrix(d_express_unique)
+ggm <- selectFast(data_mat, family = "LA", verbose = TRUE)
+
+
+
 
 #========================
 # WCGNA
