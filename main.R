@@ -20,7 +20,7 @@ options(strinsAsFactors=FALSE)
 allowWGCNAThreads()
 
 
-setwd("Users/suminlee/Desktop/Probability_Graph_Model/term_project/anal")
+setwd("~/Source/work/PGM_project")
 
 # download .gz file and load the data
 gse49710 <- getGEO("GSE49710",GSEMatrix=TRUE)[[1]]
@@ -87,15 +87,19 @@ cor(t(cul4a))
 d_express_unique <- d_express[!duplicated(d_gene$GeneSymbol),]
 # split train-test set
 train_size <- 0.8*dim(d_express_unique)[2]
-train_set <- d_express_unique[,1:train_size]
-test_set <- d_express_unique[,train_size:dim(d_express_unique)[2]]
+
+train_set   <- d_express_unique[,1:train_size]
+train_label <- as.factor(risk[1:train_size])
+test_set   <- d_express_unique[,train_size:dim(d_express_unique)[2]]
+test_label <- as.factor(risk[ train_size:dim(d_express_unique)[2] ])
 
 # random forest (for gene selection)
 rf <- randomForest(x=t(train_set), y=as.factor(risk[1:train_size]))
 train_pred <- predict(rf, t(train_set))
-confusionMatrix(train_pred, as.factor(risk[1:train_size]))
+confusionMatrix(train_pred, train_label)
+
 test_pred <- predict(rf, t(test_set))
-confusionMatrix(test_pred, as.factor(risk[train_size:dim(d_express_unique)[2]]))
+confusionMatrix(test_pred, test_label)
 
 impt <- importance(rf)
 top_n <- 1000
@@ -104,20 +108,98 @@ sorted_gene <- sort(impt/sum(impt),decreasing=TRUE,index.return=TRUE)
 top_n_id <- head(sorted_gene$ix, n= top_n)
 top_n_importance <- head(sorted_gene$x, n= top_n)
 
+# New tensors sorted by importance
+d_express_top <- d_express_unique[c(top_n_id),]
+
+## Feature classifier using important features
+
+## Create random index for fair comparison 
+seed_key <- strtoi("00000001")  # Seed for random sampling
+set.seed(seed_key)
+random_sample <- sample(x=1:length(risk), size=length(risk))
+
+# Random indices;
+rnd_tr_idx <- c(random_sample[         1:train_size  ])
+rnd_ts_idx <- c(random_sample[train_size:length(risk)])
+
+trunc_train_set   <- d_express_top[, rnd_tr_idx]
+trunc_train_label <- as.factor(risk[rnd_tr_idx])
+trunc_test_set   <- d_express_top[, rnd_ts_idx]
+trunc_test_label <- as.factor(risk[rnd_ts_idx])
+
+small_rf <- randomForest(x=t(trunc_train_set), y=trunc_train_label)
+
+trunc_train_pred <- predict(small_rf, t(trunc_train_set))
+confusionMatrix(trunc_train_pred, trunc_train_label)
+
+trunc_test_pred  <- predict(small_rf, t(trunc_test_set))
+confusionMatrix(trunc_test_pred,  trunc_test_label )
+## As expected, using important features gives at least sufficiently enough result
+
 #========================
 # Graph construction
 #========================
-d_express_top <- d_express_unique[c(top_n_id),]
-
 # covariance matrix
-cov_mat = cov(d_express_unique)
+
+# Pearson correlation matrix; normalized by autocorrelation
+pearson_cor <- function(arr) {
+  cov_mat = cov(arr)
+  sig_arr = data.matrix(sqrt(diag(cov_mat)))
+  norm_cov_mat <- cov_mat / (sig_arr %*% t(sig_arr))
+}
+
+
+# min value of normalized covariance is 0.77756, retrieved by min(*)
+# Could we make the estimator based on the correlation?
+
+# Feature pruning is required to remove the neglectable features.
+# but how?
+# Covariance based methods are not possible; 10000 features could be used.
+
+# Then, based on the std values, we could remove some features.
+
+mu  <- apply(d_express_unique, 1, mean)
+std <- apply(d_express_unique, 1, sd)
+
+# TOP-N function
+get_top_n <- function(target, top_n) {
+  sorted_list = sort(target, decreasing=TRUE, index.return=TRUE)
+  top_n_idx = head(sorted_list$ix, n = top_n)
+  target[c(top_n_idx)]
+}
+
+top_std <- get_top_n(std, top_n = (2 * top_n))
+
+d_express_std <- d_express_unique[c(names(top_std)), ]
+
+## Features (for description)
+# feature-1: top-n-id / features-2: features selected by std
+features_1 <- as.character(top_n_id)
+features_2 <- names(d_express_std)
+
+diff_feature_2 <- features_2[!(features_1 %in% features_2)] # only in std based
+
+## we could use the features above (std-based) in RF;
+diff_rf <- randomForest(t(d_express_unique[, rnd_tr_idx]), trunc_train_label)
+confusionMatrix(predict(diff_rf, t(d_express_unique[, rnd_ts_idx])), trunc_test_label)
+# and results are similar.
+
+## But comparing the histogram of Pearson correlation matrix,
+# important-based selection gives more flat graph, while std-based filtering gives more pointy graph.
+# hist(pearson_cor(t(d_express_top)))
+# hist(pearson_cor(t(d_express_std)))
+# Meaning, the std-based filtering might result in non-related important features.
+
+# From this, it seems the Random Forest method are powerful
+
 
 # ggm package
 # need adjacency matrix
 # glasso_ggm <- fitCovGraph(cov_mat)
 
 # glasso package
-inv_cov <- glasso(d_express, rho=0.1)
+inv_cov <- glasso(d_express, rho=0.1)  
+# Matrix size of 19860 x 498 - cannot run the command with 16 Gb RAM
 
 # GGMselect package
 data_mat <- data.matrix(d_express_unique)
