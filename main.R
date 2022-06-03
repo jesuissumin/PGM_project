@@ -1,13 +1,15 @@
-if(!require("BiocManager",quietly=TRUE))
-  install.packages("BiocManager")
-BiocManager::install(version="3.15")
-BiocManager::install("GEOquery")
-BiocManager::install('WGCNA', force=TRUE)
-BiocManager::install('graph',force=TRUE)
-install.packages("psych")
-install.packages("caret")
-install.packages('randomForest')
-install.packages("ggm")
+pack_s<-list("BiocManager", "psych", "caret", "randomForest", "ggm", "GGMselect", "glasso")
+bpack_s<-list("GEOquery","WGCNA","graph")
+for (p in pack_s){
+  if(!require(p, quietly=TRUE)){
+    install.packages(p)
+  }
+}
+for (b in bpack_s){
+  if(!require(b, quietly=TRUE)){
+    BiocManager::install(b)
+  }
+}
 library(GEOquery)
 library(psych)
 library(caret)
@@ -20,12 +22,9 @@ options(strinsAsFactors=FALSE)
 allowWGCNAThreads()
 
 
-setwd("Users/suminlee/Desktop/Probability_Graph_Model/term_project/anal")
-
 # download .gz file and load the data
 gse49710 <- getGEO("GSE49710",GSEMatrix=TRUE)[[1]]
 
-# gse49710 <- getGEO("./GSE49710_series_matrix.txt.gz", GSEMatrix=TRUE)[[1]]
 d_phenomenon <- pData(phenoData(gse49710))
 d_gene <- pData(featureData(gse49710))
 d_express <- as.data.frame(exprs(gse49710))
@@ -77,6 +76,7 @@ confusionMatrix(as.factor(mycn),as.factor(risk))
 
 # duplication example "CUL4A"
 cul4a <- d_express[d_gene$GeneSymbol == "CUL4A",]
+sprintf("gene duplication example, CUL4A")
 cor(t(cul4a))
 
 #========================
@@ -91,7 +91,12 @@ train_set <- d_express_unique[,1:train_size]
 test_set <- d_express_unique[,train_size:dim(d_express_unique)[2]]
 
 # random forest (for gene selection)
-rf <- randomForest(x=t(train_set), y=as.factor(risk[1:train_size]))
+if (file.exists("rf.RData")){
+  load("rf.RData")
+} else {
+  rf <- randomForest(x=t(train_set), y=as.factor(risk[1:train_size]));
+  save(rf, file="rf.RData")
+}
 train_pred <- predict(rf, t(train_set))
 confusionMatrix(train_pred, as.factor(risk[1:train_size]))
 test_pred <- predict(rf, t(test_set))
@@ -107,21 +112,41 @@ top_n_importance <- head(sorted_gene$x, n= top_n)
 #========================
 # Graph construction
 #========================
-d_express_top <- d_express_unique[c(top_n_id),]
+# top 1000 genes
+#========================
+d_express_topn <- d_express_unique[c(top_n_id),]
+
+# standardization
+topn_scale <- scale(t(d_express_topn))
 
 # covariance matrix
-cov_mat = cov(d_express_unique)
+topn_cov_mat <- cov(topn_scale)
 
 # ggm package
 # need adjacency matrix
 # glasso_ggm <- fitCovGraph(cov_mat)
 
 # glasso package
-inv_cov <- glasso(d_express, rho=0.1)
+topn_inv_cov <- glasso(topn_scale, rho=0.1, nobs=dim(topn_scale)[1])
 
 # GGMselect package
-data_mat <- data.matrix(d_express_unique)
-ggm <- selectFast(data_mat, family = "LA", verbose = TRUE)
+m_topn_cov <- data.matrix(topn_cov_mat)
+topn_ggm <- selectFast(m_topn_cov, family = "LA", verbose = TRUE)
+
+#========================
+# all unique genes
+#========================
+unique_scale <- scale(t(d_express))
+unique_cov_mat <- cov(uqnie_scale)
+unique_inv_cov <- glasso(unique_scale, rho=1, nobs=dim(unique_scale)[1])
+m_unique_cov <- data.matrix(unique_cov_mat)
+unique_ggm <- selectFast(m_unqiue_cov, family = "LA", verbose = TRUE)
+
+#========================
+# high risk prediction
+# with PGM
+#========================
+# TODO
 
 
 
@@ -179,11 +204,5 @@ geneTree = net$dendrograms[[1]];
 save(MEs, moduleLabels, moduleColors, geneTree, 
      file = "network.RData")
 
-
-#========================
-# high risk prediction
-# with PGM
-#========================
-# TODO
 
 
