@@ -1,12 +1,14 @@
-pack_s<-list("BiocManager", "psych", "caret", "randomForest", "ggm", "GGMselect", "glasso")
+pack_s<-list("BiocManager", "psych", "caret", "randomForest", "ggm", +
+               "GGMselect", "glasso","plot.matrix")
 bpack_s<-list("GEOquery","WGCNA","graph")
 for (p in pack_s){
-  if(!require(p, quietly=TRUE)){
-    install.packages(p)
+  if(!p%in%rownames(installed.packages())){
+    print(p)
+    #install.packages(p)
   }
 }
 for (b in bpack_s){
-  if(!require(b, quietly=TRUE)){
+  if(!b%in%rownames(installed.packages())){
     BiocManager::install(b)
   }
 }
@@ -18,6 +20,8 @@ library(ggm)
 library(WGCNA)
 library(GGMselect)
 library(glasso)
+library(plot.matrix)
+library(RColorBrewer)
 options(strinsAsFactors=FALSE)
 allowWGCNAThreads()
 
@@ -48,7 +52,7 @@ sprintf("Number of assigned genes without missing data: %d (omitted: %d)",
         sum(assigned)-dim(na.omit(d_express[assigned,]))[1])
 d_express <- na.omit(d_express[assigned,])
 d_gene <- d_gene[assigned,]
-splrintf("Unique genes: %d",
+sprintf("Unique genes: %d",
          lenght(unique(d_gene$GeneSymbol)))
 boxplot(d_express[,300:315])
 
@@ -86,21 +90,30 @@ cor(t(cul4a))
 # leave the first data if gene is duplicated
 d_express_unique <- d_express[!duplicated(d_gene$GeneSymbol),]
 # split train-test set
-train_size <- 0.8*dim(d_express_unique)[2]
-train_set <- d_express_unique[,1:train_size]
-test_set <- d_express_unique[,train_size:dim(d_express_unique)[2]]
+# balance high-risk and low-risk ratio of train-test sets
+high_risk_express <- d_express_unique[risk==1]
+low_risk_express <- d_express_unique[risk==0]
+high_train_size <- as.integer(0.8*sum(risk==1))
+low_train_size <- as.integer(0.8*sum(risk==0))
+train_set <- cbind(high_risk_express[,1:high_train_size], +
+                     low_risk_express[,1:low_train_size])
+test_set <- cbind(high_risk_express[,(high_train_size+1):sum(risk==1)], +
+                    low_risk_express[,(low_train_size+1):sum(risk==0)])
+train_risk <- c(rep(c(1),high_train_size), rep(c(0),low_train_size))
+test_risk <- c(rep(c(1),sum(risk==1)-high_train_size), +
+                 rep(c(0),sum(risk==0)-low_train_size))
 
 # random forest (for gene selection)
 if (file.exists("rf.RData")){
   load("rf.RData")
 } else {
-  rf <- randomForest(x=t(train_set), y=as.factor(risk[1:train_size]));
+  rf <- randomForest(x=t(train_set), y=as.factor(train_risk));
   save(rf, file="rf.RData")
 }
 train_pred <- predict(rf, t(train_set))
-confusionMatrix(train_pred, as.factor(risk[1:train_size]))
+confusionMatrix(train_pred, as.factor(train_risk))
 test_pred <- predict(rf, t(test_set))
-confusionMatrix(test_pred, as.factor(risk[train_size:dim(d_express_unique)[2]]))
+confusionMatrix(test_pred, as.factor(test_risk))
 
 impt <- importance(rf)
 top_n <- 1000
@@ -117,36 +130,121 @@ top_n_importance <- head(sorted_gene$x, n= top_n)
 d_express_topn <- d_express_unique[c(top_n_id),]
 
 # standardization
-topn_scale <- scale(t(d_express_topn))
+topn_scale <- t(scale(d_express_topn))
 
 # covariance matrix
 topn_cov_mat <- cov(topn_scale)
 
-# ggm package
-# need adjacency matrix
-# glasso_ggm <- fitCovGraph(cov_mat)
-
 # glasso package
-topn_inv_cov <- glasso(topn_scale, rho=0.1, nobs=dim(topn_scale)[1])
+if (file.exists("topn_inv_cov.RData")){
+  load("topn_inv_cov.RData")
+};
+else {
+  topn_inv_cov <- glasso(topn_scale, rho=0.1, nobs=dim(topn_scale)[1])
+  save(topn_inv_cov,file="topn_inv_cov.RData")
+}
+# visualize inverse covariance matrix's zero pattern up to top100 genes
+# more than 400 dimension too mash
+jpeg(file='topn_inv_cov.jpeg')
+plot(topn_inv_cov[1:200,1:200], border=NA) 
+dev.off()
 
 # GGMselect package
 m_topn_cov <- data.matrix(topn_cov_mat)
 topn_ggm <- selectFast(m_topn_cov, family = "LA", verbose = TRUE)
 
 #========================
-# all unique genes
+# entire genes
 #========================
-unique_scale <- scale(t(d_express))
-unique_cov_mat <- cov(uqnie_scale)
-unique_inv_cov <- glasso(unique_scale, rho=1, nobs=dim(unique_scale)[1])
-m_unique_cov <- data.matrix(unique_cov_mat)
-unique_ggm <- selectFast(m_unqiue_cov, family = "LA", verbose = TRUE)
+#unique_scale <- scale(t(d_express))
+#unique_cov_mat <- cov(uqnie_scale)
+#unique_inv_cov <- glasso(unique_scale, rho=0.1, nobs=dim(unique_scale)[1])
+#m_unique_cov <- data.matrix(unique_cov_mat)
+#unique_ggm <- selectFast(m_unqiue_cov, family = "LA", verbose = TRUE)
 
 #========================
 # high risk prediction
 # with PGM
 #========================
-# TODO
+# posterior P(G|x)
+# GGM assumes multivariate Gaussian
+#========================
+
+# low-risk group
+topn_lowrisk <- low_risk_express[c(top_n_id),1: low_train_size]
+topn_lowrisk_scale <- scale(t(topn_lowrisk))
+topn_lowrisk_cov <- cov(topn_lowrisk_scale)
+if (file.exists("topn_lowrisk_inv_cov.RData")){
+  load("topn_lowrisk_inv_cov.RData")
+} else {
+  topn_lowrisk_inv_cov <- glasso(topn_lowrisk, rho=0.1, nobs=dim(topn_lowrisk_scale)[1]);
+  save(topn_lowrisk_inv_cov, "topn_lowrisk_inv_cov.RData");
+}
+
+
+# high-risk group
+topn_highrisk <- high_risk_express[c(top_n_id),1:high_train_size]
+topn_highrisk_scale <- scale(t(topn_highrisk))
+topn_highrisk_cov <- cov(topn_highrisk_scale)
+if (file.exists("topn_highrisk_inv_cov.RData")){
+  load("topn_highrisk_inv_cov.RData")
+} else {
+  topn_highrisk_inv_cov <- glasso(topn_highrisk, rho=0.1, nobs=dim(topn_highrisk_scale)[1]);
+  save(topn_highrisk_inv_cov, "topn_highrisk_inv_cov.RData");
+}
+
+
+# Posterior
+multiGaussian <- function(x, cov, inv_cov){
+  dimension <- length(x)
+  det <- determinant(cov)
+  det <- sqrt(exp(det$modulus[1]))
+  result <- exp(-0.5*(x%*%inv_cov%*%x))/(sqrt(2*pi)**dimension)/det
+  return(result)
+}
+low_transform <- function(x){
+  low_mu <- attr(topn_lowrisk_scale,"scaled:center")
+  low_sd <- attr(topn_lowrisk_scale,"scaled:scale")
+  result <- (x-low_mu)/low_sd
+  return(result)
+}
+high_transform <- function(x){
+  low_mu <- attr(topn_highrisk_scale,"scaled:center")
+  low_sd <- attr(topn_highrisk_scale,"scaled:scale")
+  result <- (x-high_mu)/high_sd
+  return(result)
+}
+
+GGMpred <- function(x){
+  # probability of high risk given x
+  # P(high), P(low)
+  p_high <- high_train_size/(high_train_size+low_train_size)
+  high_x <- high_transform(x)
+  post_high <- multiGaussian(high_x, topn_highrisk_cov, topn_highrisk_inv_cov)*p_high
+  
+  p_low <- low_train_size/(high_train_size+low_train_size)
+  low_x <- low_transform(x)
+  post_low <- multiGaussian(low_x, topn_lowrisk_cov, topn_lowrisk_inv_cov)*p_low
+  
+  return(p_high/(p_high+p_low))
+}
+
+
+#========================
+# factor analysis
+#========================
+
+
+#========================
+# expected calibration error
+#========================
+
+
+
+
+
+
+
 
 
 
