@@ -1,10 +1,9 @@
-pack_s<-list("BiocManager", "psych", "caret", "randomForest", "ggm", +
+pack_s<-list("BiocManager", "psych", "caret", "randomForest", "ggm",
                "GGMselect", "glasso","plot.matrix")
 bpack_s<-list("GEOquery","WGCNA","graph")
 for (p in pack_s){
   if(!p%in%rownames(installed.packages())){
-    print(p)
-    #install.packages(p)
+    install.packages(p)
   }
 }
 for (b in bpack_s){
@@ -95,12 +94,12 @@ high_risk_express <- d_express_unique[risk==1]
 low_risk_express <- d_express_unique[risk==0]
 high_train_size <- as.integer(0.8*sum(risk==1))
 low_train_size <- as.integer(0.8*sum(risk==0))
-train_set <- cbind(high_risk_express[,1:high_train_size], +
+train_set <- cbind(high_risk_express[,1:high_train_size],
                      low_risk_express[,1:low_train_size])
-test_set <- cbind(high_risk_express[,(high_train_size+1):sum(risk==1)], +
+test_set <- cbind(high_risk_express[,(high_train_size+1):sum(risk==1)], 
                     low_risk_express[,(low_train_size+1):sum(risk==0)])
 train_risk <- c(rep(c(1),high_train_size), rep(c(0),low_train_size))
-test_risk <- c(rep(c(1),sum(risk==1)-high_train_size), +
+test_risk <- c(rep(c(1),sum(risk==1)-high_train_size), 
                  rep(c(0),sum(risk==0)-low_train_size))
 
 # random forest (for gene selection)
@@ -233,6 +232,7 @@ GGMpred <- function(x){
 #========================
 # factor analysis
 #========================
+fa <- factanal(train_set[1:1000,], factors=2)
 
 
 #========================
@@ -245,7 +245,7 @@ GGMpred <- function(x){
 
 
 
-
+quit(save="yes")
 
 
 
