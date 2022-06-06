@@ -83,8 +83,8 @@ sprintf("gene duplication example, CUL4A")
 cor(t(cul4a))
 
 #========================
-# high risk prediction 
-# with Random Forest
+# train-test set split for
+# Random Forest and GGM
 #========================
 # leave the first data if gene is duplicated
 d_express_unique <- d_express[!duplicated(d_gene$GeneSymbol),]
@@ -102,6 +102,20 @@ train_risk <- c(rep(c(1),high_train_size), rep(c(0),low_train_size))
 test_risk <- c(rep(c(1),sum(risk==1)-high_train_size), 
                  rep(c(0),sum(risk==0)-low_train_size))
 
+#========================
+# MYCN performance 
+# on test set
+#========================
+sprintf("MYCN amplification: test set")
+test_mycn <- c(mycn[risk==1][(high_train_size+1):sum(risk==1)], 
+               mycn[risk==0][(low_train_size+1):sum(risk==0)])
+confusionMatrix(as.factor(test_mycn),as.factor(test_risk))
+
+
+#========================
+# high risk prediction
+# with Random forest
+#========================
 # random forest (for gene selection)
 if (file.exists("rf.RData")){
   load("rf.RData")
@@ -208,8 +222,8 @@ low_transform <- function(x){
   return(result)
 }
 high_transform <- function(x){
-  low_mu <- attr(topn_highrisk_scale,"scaled:center")
-  low_sd <- attr(topn_highrisk_scale,"scaled:scale")
+  high_mu <- attr(topn_highrisk_scale,"scaled:center")
+  high_sd <- attr(topn_highrisk_scale,"scaled:scale")
   result <- (x-high_mu)/high_sd
   return(result)
 }
@@ -228,12 +242,7 @@ GGMpred <- function(x){
   return(p_high/(p_high+p_low))
 }
 
-
-#========================
-# factor analysis
-#========================
-fa <- factanal(train_set[1:1000,], factors=2)
-
+ggm_pred <- 
 
 #========================
 # expected calibration error
@@ -241,6 +250,21 @@ fa <- factanal(train_set[1:1000,], factors=2)
 
 
 
+#========================
+# MYCN amplification with RF or GGM
+# for more accurate and 
+# reliable prediction
+#========================
+# first filtering MYCN - high specificity
+
+
+# then apply RF or GGM for samples predicted "low risk"
+# check calibration
+
+
+#========================
+# Diff. Net. Anal
+#========================
 
 
 
