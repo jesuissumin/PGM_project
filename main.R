@@ -1,6 +1,6 @@
 pack_s<-list("BiocManager", "psych", "caret", "randomForest", "ggm",
-               "GGMselect", "glasso","plot.matrix")
-bpack_s<-list("GEOquery","WGCNA","graph")
+               "glasso","plot.matrix")
+bpack_s<-list("GEOquery","graph","csdR")
 for (p in pack_s){
   if(!p%in%rownames(installed.packages())){
     install.packages(p)
@@ -16,14 +16,14 @@ library(psych)
 library(caret)
 library(randomForest)
 library(ggm)
-library(WGCNA)
-library(GGMselect)
 library(glasso)
 library(plot.matrix)
-library(RColorBrewer)
-options(strinsAsFactors=FALSE)
-allowWGCNAThreads()
-
+library(csdR)
+library(magrittr)
+library(igraph)
+library(glue)
+library(dplyr)
+set.seed(45394534)
 
 # download .gz file and load the data
 gse49710 <- getGEO("GSE49710",GSEMatrix=TRUE)[[1]]
@@ -52,7 +52,7 @@ sprintf("Number of assigned genes without missing data: %d (omitted: %d)",
 d_express <- na.omit(d_express[assigned,])
 d_gene <- d_gene[assigned,]
 sprintf("Unique genes: %d",
-         lenght(unique(d_gene$GeneSymbol)))
+         length(unique(d_gene$GeneSymbol)))
 boxplot(d_express[,300:315])
 
 #========================
@@ -75,7 +75,7 @@ sprintf("Cohen Kappa (risk, death) = %.4f",
         cohen.kappa(cbind(risk, death))$kappa)
 
 # mycn amplification as high risk predictor
-confusionMatrix(as.factor(mycn),as.factor(risk))
+#confusionMatrix(as.factor(mycn),as.factor(risk))
 
 # duplication example "CUL4A"
 cul4a <- d_express[d_gene$GeneSymbol == "CUL4A",]
@@ -83,8 +83,8 @@ sprintf("gene duplication example, CUL4A")
 cor(t(cul4a))
 
 #========================
-# high risk prediction 
-# with Random Forest
+# train-test set split for
+# Random Forest and GGM
 #========================
 # leave the first data if gene is duplicated
 d_express_unique <- d_express[!duplicated(d_gene$GeneSymbol),]
@@ -102,6 +102,20 @@ train_risk <- c(rep(c(1),high_train_size), rep(c(0),low_train_size))
 test_risk <- c(rep(c(1),sum(risk==1)-high_train_size), 
                  rep(c(0),sum(risk==0)-low_train_size))
 
+#========================
+# MYCN performance 
+# on test set
+#========================
+sprintf("MYCN amplification: test set")
+test_mycn <- c(mycn[risk==1][(high_train_size+1):sum(risk==1)], 
+               mycn[risk==0][(low_train_size+1):sum(risk==0)])
+confusionMatrix(as.factor(test_mycn),as.factor(test_risk))
+
+
+#========================
+# high risk prediction
+# with Random forest
+#========================
 # random forest (for gene selection)
 if (file.exists("rf.RData")){
   load("rf.RData")
@@ -112,14 +126,20 @@ if (file.exists("rf.RData")){
 train_pred <- predict(rf, t(train_set))
 confusionMatrix(train_pred, as.factor(train_risk))
 test_pred <- predict(rf, t(test_set))
-confusionMatrix(test_pred, as.factor(test_risk))
+confusionMatrix(as.factor(test_pred), as.factor(test_risk))
 
 impt <- importance(rf)
+sorted_gene <- sort(impt/sum(impt),decreasing=TRUE,index.return=TRUE)
+# for Diff.Net.Anal. top 1000
 top_n <- 1000
 sum(head(sort(impt/sum(impt),decreasing=TRUE), n = top_n))
-sorted_gene <- sort(impt/sum(impt),decreasing=TRUE,index.return=TRUE)
 top_n_id <- head(sorted_gene$ix, n= top_n)
 top_n_importance <- head(sorted_gene$x, n= top_n)
+# for GGMpred. top 140
+top_n_min <- min(high_train_size, low_train_size)
+sum(head(sort(impt/sum(impt),decreasing=TRUE), n = top_n_min))
+top_n_min_id <- head(sorted_gene$ix, n= top_n_min)
+top_n_min_importance <- head(sorted_gene$x, n= top_n_min)
 
 #========================
 # Graph construction
@@ -128,29 +148,22 @@ top_n_importance <- head(sorted_gene$x, n= top_n)
 #========================
 d_express_topn <- d_express_unique[c(top_n_id),]
 
-# standardization
-topn_scale <- t(scale(d_express_topn))
-
 # covariance matrix
-topn_cov_mat <- cov(topn_scale)
+topn_cov_mat <- cov(t(d_express_topn))
 
 # glasso package
 if (file.exists("topn_inv_cov.RData")){
   load("topn_inv_cov.RData")
-};
-else {
-  topn_inv_cov <- glasso(topn_scale, rho=0.1, nobs=dim(topn_scale)[1])
+} else {
+  topn_inv_cov <- glasso(topn_cov_mat, rho=0.1, nobs=length(risk))
   save(topn_inv_cov,file="topn_inv_cov.RData")
 }
 # visualize inverse covariance matrix's zero pattern up to top100 genes
 # more than 400 dimension too mash
-jpeg(file='topn_inv_cov.jpeg')
-plot(topn_inv_cov[1:200,1:200], border=NA) 
+jpeg(file='topn_inv_cov.jpeg', width=1000, height=1000, res=200)
+plot(topn_inv_cov$wi[1:200,1:200], border=NA) 
 dev.off()
 
-# GGMselect package
-m_topn_cov <- data.matrix(topn_cov_mat)
-topn_ggm <- selectFast(m_topn_cov, family = "LA", verbose = TRUE)
 
 #========================
 # entire genes
@@ -164,53 +177,69 @@ topn_ggm <- selectFast(m_topn_cov, family = "LA", verbose = TRUE)
 #========================
 # high risk prediction
 # with PGM
+# top 140 genes
 #========================
+# construct inverse covariance matrix
+#========================
+# low-risk group
+# top 1000
+top1000_lowrisk <- low_risk_express[c(top_n_id),1: low_train_size]
+top1000_lowrisk_cov <- cov(t(top1000_lowrisk))
+if (file.exists("top1000_lowrisk_inv_cov.RData")){
+  load("top1000_lowrisk_inv_cov.RData")
+} else {
+  top1000_lowrisk_inv_cov <- glasso(top1000_lowrisk_cov, rho=0.1, nobs=low_train_size);
+  save(top1000_lowrisk_inv_cov, file="top1000_lowrisk_inv_cov.RData");
+}
+print(top1000_lowrisk_inv_cov$loglik)
+
+# top 140
+top140_lowrisk <- low_risk_express[c(top_n_min_id),1: low_train_size]
+top140_lowrisk_cov <- cov(t(top140_lowrisk))
+low_mu <- attr(scale(t(top140_lowrisk)), "scaled:center")
+if (file.exists("top140_lowrisk_inv_cov.RData")){
+  load("top140_lowrisk_inv_cov.RData")
+} else {
+  top140_lowrisk_inv_cov <- glasso(top140_lowrisk_cov, rho=0.1, nobs=low_train_size);
+  save(top140_lowrisk_inv_cov, file="top140_lowrisk_inv_cov.RData");
+}
+print(top140_lowrisk_inv_cov$loglik)
+
+# high-risk group
+# top 1000
+top1000_highrisk <- high_risk_express[c(top_n_id),1:high_train_size]
+top1000_highrisk_cov <- cov(t(top1000_highrisk))
+if (file.exists("top1000_highrisk_inv_cov.RData")){
+  load("top1000_highrisk_inv_cov.RData")
+} else {
+  top1000_highrisk_inv_cov <- glasso(top1000_highrisk_cov, rho=0.1, nobs=high_train_size);
+  save(top1000_highrisk_inv_cov, file="top1000_highrisk_inv_cov.RData");
+}
+print(top1000_highrisk_inv_cov$loglik)
+
+# top 140
+top140_highrisk <- high_risk_express[c(top_n_min_id),1:high_train_size]
+top140_highrisk_cov <- cov(t(top140_highrisk))
+high_mu <-attr(scale(t(top140_highrisk)), "scaled:center")
+if (file.exists("top140_highrisk_inv_cov.RData")){
+  load("top140_highrisk_inv_cov.RData")
+} else {
+  top140_highrisk_inv_cov <- glasso(top140_highrisk_cov, rho=0.1, nobs=high_train_size);
+  save(top140_highrisk_inv_cov, file="top140_highrisk_inv_cov.RData");
+}
+print(top140_highrisk_inv_cov$loglik)
+
+#========================
+# GGM prediction
 # posterior P(G|x)
 # GGM assumes multivariate Gaussian
 #========================
-
-# low-risk group
-topn_lowrisk <- low_risk_express[c(top_n_id),1: low_train_size]
-topn_lowrisk_scale <- scale(t(topn_lowrisk))
-topn_lowrisk_cov <- cov(topn_lowrisk_scale)
-if (file.exists("topn_lowrisk_inv_cov.RData")){
-  load("topn_lowrisk_inv_cov.RData")
-} else {
-  topn_lowrisk_inv_cov <- glasso(topn_lowrisk, rho=0.1, nobs=dim(topn_lowrisk_scale)[1]);
-  save(topn_lowrisk_inv_cov, "topn_lowrisk_inv_cov.RData");
-}
-
-
-# high-risk group
-topn_highrisk <- high_risk_express[c(top_n_id),1:high_train_size]
-topn_highrisk_scale <- scale(t(topn_highrisk))
-topn_highrisk_cov <- cov(topn_highrisk_scale)
-if (file.exists("topn_highrisk_inv_cov.RData")){
-  load("topn_highrisk_inv_cov.RData")
-} else {
-  topn_highrisk_inv_cov <- glasso(topn_highrisk, rho=0.1, nobs=dim(topn_highrisk_scale)[1]);
-  save(topn_highrisk_inv_cov, "topn_highrisk_inv_cov.RData");
-}
-
-
-# Posterior
-multiGaussian <- function(x, cov, inv_cov){
-  dimension <- length(x)
-  det <- determinant(cov)
-  det <- sqrt(exp(det$modulus[1]))
-  result <- exp(-0.5*(x%*%inv_cov%*%x))/(sqrt(2*pi)**dimension)/det
-  return(result)
-}
-low_transform <- function(x){
-  low_mu <- attr(topn_lowrisk_scale,"scaled:center")
-  low_sd <- attr(topn_lowrisk_scale,"scaled:scale")
-  result <- (x-low_mu)/low_sd
-  return(result)
-}
-high_transform <- function(x){
-  low_mu <- attr(topn_highrisk_scale,"scaled:center")
-  low_sd <- attr(topn_highrisk_scale,"scaled:scale")
-  result <- (x-high_mu)/high_sd
+multiGaussian <- function(x, mu, inv_cov){
+  dimension <- dim(inv_cov)[1]
+  sqrt_det <- sqrt(det(inv_cov))
+  result <- sqrt_det*exp(-0.5*((x-mu)%*%inv_cov%*%(x-mu)))/(sqrt(2*pi)**dimension)
+  # high dimensional problem...
+  #result <- abs((-0.5*((x-mu)%*%inv_cov%*%(x-mu))) - log(sqrt_det) - log(sqrt(2*pi)**dimension))
   return(result)
 }
 
@@ -218,89 +247,221 @@ GGMpred <- function(x){
   # probability of high risk given x
   # P(high), P(low)
   p_high <- high_train_size/(high_train_size+low_train_size)
-  high_x <- high_transform(x)
-  post_high <- multiGaussian(high_x, topn_highrisk_cov, topn_highrisk_inv_cov)*p_high
+  post_high <- multiGaussian(x, high_mu, top140_highrisk_inv_cov$wi)*p_high
   
   p_low <- low_train_size/(high_train_size+low_train_size)
-  low_x <- low_transform(x)
-  post_low <- multiGaussian(low_x, topn_lowrisk_cov, topn_lowrisk_inv_cov)*p_low
-  
-  return(p_high/(p_high+p_low))
+  post_low <- multiGaussian(x, low_mu, top140_lowrisk_inv_cov$wi)*p_low
+  #print(paste('post_high:',format(post_high),', post_low:',format(post_low)))
+  return(post_high/(post_high+post_low))
 }
 
+#for test sample 1, 
+#post_high = 1.449216e-84, post_low = 1.89427e-142
+# return 1
 
-#========================
-# factor analysis
-#========================
-fa <- factanal(train_set[1:1000,], factors=2)
+top140_test_set <- test_set[c(top_n_min_id),]
+ggm_pred_prob <- c(1:ncol(top140_test_set))
+for (i in 1:ncol(top140_test_set)){
+  ggm_pred_prob[i] <-GGMpred(top140_test_set[,i])
+}
+jpeg(file='ggm_pred_hist.jpeg', width=1000, height=1000, res=200)
+hist(ggm_pred_prob)
+dev.off()
 
+ggm_pred <- c(1:length(ggm_pred_prob))
+for (i in 1:length(ggm_pred_prob)){
+  if (ggm_pred_prob[i] > 0.5){
+    ggm_pred[i] <- 1
+  } else {
+    ggm_pred[i] <- 0
+  }
+}
+
+sprintf("GGM test set prediction performance")
+confusionMatrix(as.factor(ggm_pred), as.factor(test_risk))
+
+# GGM with train set
+top140_train_set <- train_set[c(top_n_min_id),]
+ggm_train_pred_prob <- c(1:ncol(top140_train_set))
+for (i in 1:ncol(top140_train_set)){
+  ggm_train_pred_prob[i] <-GGMpred(top140_train_set[,i])
+}
+ggm_train_pred <- c(1:length(ggm_train_pred_prob))
+for (i in 1:length(ggm_train_pred_prob)){
+  if (ggm_train_pred_prob[i] > 0.5){
+    ggm_train_pred[i] <- 1
+  } else {
+    ggm_train_pred[i] <- 0
+  }
+}
+
+sprintf("GGM train set prediction performance")
+confusionMatrix(as.factor(ggm_train_pred), as.factor(train_risk))
 
 #========================
 # expected calibration error
 #========================
+ECE <- function(pred, label, file_name){
+  n_bin = 10
+  h <- hist(pred)
+  N <- length(pred)
+  count <- h$count
+  breaks <- h$breaks
+  breaks[length(breaks)] <- breaks[length(breaks)] + 0.1 
+  pr <- c(0:(n_bin-1))/n_bin + 0.05
+  bins <- c(1:n_bin)*0
+  ece <- 0
+  for (i in 1:n_bin) {
+    cond <- (breaks[i] <= pred) & (pred < breaks[i+1])
+    if (sum(cond) != 0){
+      bins[i] <- mean(pred[cond]);
+      ece <- ece + abs(pr[i]-bins[i])*count[i]/N;
+    }
+  }
+  
+  # plot
+  jpeg(file=paste(file_name,".jpeg",sep=""),width=1000, height=1000, res=200)
+  # positive ratio
+  plot(c(0,1),c(0,1),type='l',lty=3,col="blue",xlab="",ylab="")
+  lines(pr,bins, type='b')
+  title(main=paste(file_name,format(ece,digits=3)),
+        xlab='predicted value',
+        ylab='positive ratio')
+  dev.off()
+  return(ece)
+}
 
+rf_pred <- predict(rf, t(test_set))
+rf_pred_prob <- predict(rf, t(test_set),"prob")[,2]
+jpeg(file='rf_pred_hist.jpeg', width=1000, height=1000, res=200)
+hist(rf_pred_prob)
+dev.off()
+rf_ece <- ECE(rf_pred_prob, test_risk, 'Random_Foreest_ece')
+print(rf_ece)
+ggm_ece <- ECE(ggm_pred_prob, test_risk, 'GGM_ece')
+print(ggm_ece)
 
+#========================
+# MYCN amplification with RF or GGM
+# for more accurate and 
+# reliable prediction
+#========================
+# first filtering MYCN - high specificity
+non_mycn_risk <- test_risk[test_mycn == 0]
 
+# RF
+non_mycn_test_set <- test_set[,test_mycn == 0]
+non_mycn_rf_pred <- predict(rf, t(non_mycn_test_set))
+non_mycn_rf_pred_prob <- predict(rf, t(non_mycn_test_set),"prob")[,2]
+# accuracy
+mean(non_mycn_rf_pred == non_mycn_risk)
+rf_total_acc <- (sum(test_mycn==1) + sum(non_mycn_rf_pred==non_mycn_risk))/length(test_risk)
+print(paste('non_mycn rf_total_acc:',format(rf_total_acc)))
+print(paste('non_mycn RF correct sum:',format(sum(non_mycn_rf_pred==non_mycn_risk)),
+            '/', format(sum(test_mycn == 0))))
+non_mycn_rf_ece <- ECE(non_mycn_rf_pred_prob, non_mycn_risk, 'RF_nonMYCN')
+print(paste('non_mycn_rf_ece:',format(non_mycn_rf_ece)))
+confusionMatrix(non_mycn_rf_pred, as.factor(non_mycn_risk))
 
+# GGM
+top140_non_mycn_set <- top140_test_set[,test_mycn==0]
+non_mycn_ggm_pred_prob <- c(1:ncol(top140_non_mycn_set))
+for (i in 1:ncol(top140_non_mycn_set)){
+  non_mycn_ggm_pred_prob[i] <-GGMpred(top140_non_mycn_set[,i])
+}
+non_mycn_ggm_pred <- c(1:length(non_mycn_ggm_pred_prob))
+for (i in 1:length(non_mycn_ggm_pred_prob)){
+  if (non_mycn_ggm_pred_prob[i] > 0.5){
+    non_mycn_ggm_pred[i] <- 1
+  } else {
+    non_mycn_ggm_pred[i] <- 0
+  }
+}
+confusionMatrix(as.factor(non_mycn_ggm_pred), as.factor(non_mycn_risk))
 
-
-
-quit(save="yes")
-
+# accuracy
+mean(non_mycn_ggm_pred==non_mycn_risk)
+ggm_total_acc <- (sum(test_mycn==1) + sum(non_mycn_ggm_pred==non_mycn_risk))/length(test_risk)
+print(paste('non mycn ggm_total_acc:',format(ggm_total_acc)))
+print(paste('non_mycn GGM correct sum:',format(sum(non_mycn_ggm_pred==non_mycn_risk)),
+            '/', format(sum(test_mycn == 0))))
+non_mycn_ggm_ece <- ECE(non_mycn_ggm_pred_prob, non_mycn_risk, 'GGM_nonMYCN')
+print(paste('non_mycn_ggm_ece:',format(non_mycn_ggm_ece)))
 
 
 #========================
-# WCGNA
-# https://horvath.genetics.ucla.edu/html/CoexpressionNetwork/Rpackages/WGCNA/Tutorials/
+# Diff. Net. Anal
 #========================
-# Choose a set of soft-thresholding powers
-powers = c(c(1:10), seq(from = 12, to=20, by=2))
+# top 140
+csd_result_140 <- run_csd(x_1=t(top140_highrisk), x_2=t(top140_lowrisk),
+                      n_it=10, verbose=FALSE)
 
-# Call the network topology analysis function
-sft = pickSoftThreshold(d_express_top, powerVector = powers, verbose = 5)
+pairs_to_pick <- 100
+c_filter <- partial_argsort(csd_result_140$cVal, pairs_to_pick)
+c_frame <- csd_result_140[c_filter, ]
+s_filter <- partial_argsort(csd_result_140$sVal, pairs_to_pick)
+s_frame <- csd_result_140[s_filter, ]
+d_filter <- partial_argsort(csd_result_140$dVal, pairs_to_pick)
+d_frame <- csd_result_140[d_filter, ]
 
-# Plot the results:
-sizeGrWindow(9, 5)
-par(mfrow = c(1,2))
-cex1 = 0.
+csd_filter <- c_filter %>%
+  union(s_filter) %>%
+  union(d_filter)
+csd_frame <- csd_results_140[csd_filter, ]
 
-# Scale-free topology fit index as a function of the soft-thresholding power
-plot(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
-     xlab="Soft Threshold (power)",ylab="Scale Free Topology Model Fit,signed R^2",type="n",
-     main = paste("Scale independence"))
-text(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
-     labels=powers,cex=cex1,col="red")
-abline(h=0.90,col="red")
+c_network <- graph_from_data_frame(c_frame, directed = FALSE)
+s_network <- graph_from_data_frame(s_frame, directed = FALSE)
+d_network <- graph_from_data_frame(d_frame, directed = FALSE)
+E(c_network)$edge_type <- "C"
+E(s_network)$edge_type <- "S"
+E(d_network)$edge_type <- "D"
+combined_network <- igraph::union(c_network, s_network, d_network)
+# Auxillary function for combining
+# the attributes of the three networks in a proper way
+join_attributes <- function(graph, attribute) {
+  ifelse(
+    test = is.na(edge_attr(graph, glue("{attribute}_1"))),
+    yes = ifelse(
+      test = is.na(edge_attr(graph, glue("{attribute}_2"))),
+      yes = edge_attr(graph, glue("{attribute}_3")),
+      no = edge_attr(graph, glue("{attribute}_2"))
+    ),
+    no = edge_attr(graph, glue("{attribute}_1"))
+  )
+}
+E(combined_network)$edge_type <- join_attributes(combined_network, "edge_type")
+layout <- layout_nicely(combined_network)
+E(combined_network)$color <- recode(E(combined_network)$edge_type,
+                                    C = "darkblue", S = "green", D = "darkred"
+)
+jpeg(file='Diff_Net_Anal.jpeg', width=1000, height=1000, res=200)
+plot(combined_network, layout = layout,
+     vertex.size = 3, edge.width = 2, vertex.label.cex = 0.001)
+dev.off()
 
-# Mean connectivity as a function of the soft-thresholding power
-plot(sft$fitIndices[,1], sft$fitIndices[,5],
-     xlab="Soft Threshold (power)",ylab="Mean Connectivity", type="n",
-     main = paste("Mean connectivity"))
-text(sft$fitIndices[,1], sft$fitIndices[,5], labels=powers, cex=cex1,col="red")
-net = blockwiseModules(d_express_top, power = 6,
-                       TOMType = "unsigned", minModuleSize = 30,
-                       reassignThreshold = 0, mergeCutHeight = 0.25,
-                       numericLabels = TRUE, pamRespectsDendro = FALSE,
-                       saveTOMs = TRUE,
-                       saveTOMFileBase = "NeuralBalstomaTOM", 
-                       verbose = 3)
+# find network's hub genes
+d_network_t <- table(c(d_frame$Gene1, d_frame$Gene2))
+hub_gene <- as.numeric(names(d_network_t)[which.max(d_network_t)])
+print(d_gene$GeneSymbol[hub_gene])
 
-sizeGrWindow(12, 9)
-# Convert labels to colors for plotting
-mergedColors = labels2colors(net$colors)
 
-# Plot the dendrogram and the module colors underneath
-plotDendroAndColors(net$dendrograms[[1]], mergedColors[net$blockGenes[[1]]],
-                    "Module colors",
-                    dendroLabels = FALSE, hang = 0.03,
-                    addGuide = TRUE, guideHang = 0.05)
+d_genes <- as.numeric(union(d_frame$Gene1, d_frame$Gene2))
+s_genes <- as.numeric(union(s_frame$Gene1, s_frame$Gene2))
 
-moduleLabels = net$colors
-moduleColors = labels2colors(net$colors)
-MEs = net$MEs;
-geneTree = net$dendrograms[[1]];
-save(MEs, moduleLabels, moduleColors, geneTree, 
-     file = "network.RData")
+# =======================
+# TODO
+#========================
+# GGM using d_genes
+#========================
+
+
+# =======================
+# TODO
+#========================
+# GGM using s_genes
+#========================
+
+
 
 
 
