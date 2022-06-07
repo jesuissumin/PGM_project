@@ -1,6 +1,6 @@
 pack_s<-list("BiocManager", "psych", "caret", "randomForest", "ggm",
                "glasso","plot.matrix")
-bpack_s<-list("GEOquery","graph")
+bpack_s<-list("GEOquery","graph","csdR")
 for (p in pack_s){
   if(!p%in%rownames(installed.packages())){
     install.packages(p)
@@ -18,8 +18,12 @@ library(randomForest)
 library(ggm)
 library(glasso)
 library(plot.matrix)
-
-
+library(csdR)
+library(magrittr)
+library(igraph)
+library(glue)
+library(dplyr)
+set.seed(45394534)
 
 # download .gz file and load the data
 gse49710 <- getGEO("GSE49710",GSEMatrix=TRUE)[[1]]
@@ -235,6 +239,8 @@ multiGaussian <- function(x, mu, inv_cov){
   dimension <- dim(inv_cov)[1]
   sqrt_det <- sqrt(det(inv_cov))
   result <- sqrt_det*exp(-0.5*((x-mu)%*%inv_cov%*%(x-mu)))/(sqrt(2*pi)**dimension)
+  # high dimensional problem...
+  #result <- abs((-0.5*((x-mu)%*%inv_cov%*%(x-mu))) - log(sqrt_det) - log(sqrt(2*pi)**dimension))
   return(result)
 }
 
@@ -246,7 +252,7 @@ GGMpred <- function(x){
   
   p_low <- low_train_size/(high_train_size+low_train_size)
   post_low <- multiGaussian(x, low_mu, top140_lowrisk_inv_cov$wi)*p_low
-  
+  #print(paste('post_high:',format(post_high),', post_low:',format(post_low)))
   return(post_high/(post_high+post_low))
 }
 
@@ -272,7 +278,7 @@ for (i in 1:length(ggm_pred_prob)){
   }
 }
 
-spirntf("GGM test set prediction performance")
+sprintf("GGM test set prediction performance")
 confusionMatrix(as.factor(ggm_pred), as.factor(test_risk))
 
 # GGM with train set
@@ -342,75 +348,118 @@ print(ggm_ece)
 # reliable prediction
 #========================
 # first filtering MYCN - high specificity
+non_mycn_risk <- test_risk[test_mycn == 0]
 
+# RF
+non_mycn_test_set <- test_set[,test_mycn == 0]
+non_mycn_rf_pred <- predict(rf, t(non_mycn_test_set))
+non_mycn_rf_pred_prob <- predict(rf, t(non_mycn_test_set),"prob")[,2]
+# accuracy
+mean(non_mycn_rf_pred == non_mycn_risk)
+rf_total_acc <- (sum(test_mycn==1) + sum(non_mycn_rf_pred==non_mycn_risk))/length(test_risk)
+print(paste('non_mycn rf_total_acc:',format(rf_total_acc)))
+print(paste('non_mycn RF correct sum:',format(sum(non_mycn_rf_pred==non_mycn_risk)),
+            '/', format(sum(test_mycn == 0))))
+non_mycn_rf_ece <- ECE(non_mycn_rf_pred_prob, non_mycn_risk, 'RF_nonMYCN')
+print(paste('non_mycn_rf_ece:',format(non_mycn_rf_ece)))
 
-# then apply RF or GGM for samples predicted "low risk"
-# check calibration
+# GGM
+top140_non_mycn_set <- top140_test_set[,test_mycn==0]
+non_mycn_ggm_pred_prob <- c(1:ncol(top140_non_mycn_set))
+for (i in 1:ncol(top140_non_mycn_set)){
+  non_mycn_ggm_pred_prob[i] <-GGMpred(top140_non_mycn_set[,i])
+}
+non_mycn_ggm_pred <- c(1:length(non_mycn_ggm_pred_prob))
+for (i in 1:length(non_mycn_ggm_pred_prob)){
+  if (non_mycn_ggm_pred_prob[i] > 0.5){
+    non_mycn_ggm_pred[i] <- 1
+  } else {
+    non_mycn_ggm_pred[i] <- 0
+  }
+}
+# accuracy
+mean(non_mycn_ggm_pred==non_mycn_risk)
+ggm_total_acc <- (sum(test_mycn==1) + sum(non_mycn_ggm_pred==non_mycn_risk))/length(test_risk)
+print(paste('non mycn ggm_total_acc:',format(ggm_total_acc)))
+print(paste('non_mycn GGM correct sum:',format(sum(non_mycn_ggm_pred==non_mycn_risk)),
+            '/', format(sum(test_mycn == 0))))
+non_mycn_ggm_ece <- ECE(non_mycn_ggm_pred_prob, non_mycn_risk, 'GGM_nonMYCN')
+print(paste('non_mycn_ggm_ece:',format(non_mycn_ggm_ece)))
 
 
 #========================
 # Diff. Net. Anal
 #========================
+# top 140
+csd_result_140 <- run_csd(x_1=t(top140_highrisk), x_2=t(top140_lowrisk),
+                      n_it=10, verbose=FALSE)
+
+pairs_to_pick <- 100
+c_filter <- partial_argsort(csd_result_140$cVal, pairs_to_pick)
+c_frame <- csd_result_140[c_filter, ]
+s_filter <- partial_argsort(csd_result_140$sVal, pairs_to_pick)
+s_frame <- csd_result_140[s_filter, ]
+d_filter <- partial_argsort(csd_result_140$dVal, pairs_to_pick)
+d_frame <- csd_result_140[d_filter, ]
+
+csd_filter <- c_filter %>%
+  union(s_filter) %>%
+  union(d_filter)
+csd_frame <- csd_results_140[csd_filter, ]
+
+c_network <- graph_from_data_frame(c_frame, directed = FALSE)
+s_network <- graph_from_data_frame(s_frame, directed = FALSE)
+d_network <- graph_from_data_frame(d_frame, directed = FALSE)
+E(c_network)$edge_type <- "C"
+E(s_network)$edge_type <- "S"
+E(d_network)$edge_type <- "D"
+combined_network <- igraph::union(c_network, s_network, d_network)
+# Auxillary function for combining
+# the attributes of the three networks in a proper way
+join_attributes <- function(graph, attribute) {
+  ifelse(
+    test = is.na(edge_attr(graph, glue("{attribute}_1"))),
+    yes = ifelse(
+      test = is.na(edge_attr(graph, glue("{attribute}_2"))),
+      yes = edge_attr(graph, glue("{attribute}_3")),
+      no = edge_attr(graph, glue("{attribute}_2"))
+    ),
+    no = edge_attr(graph, glue("{attribute}_1"))
+  )
+}
+E(combined_network)$edge_type <- join_attributes(combined_network, "edge_type")
+layout <- layout_nicely(combined_network)
+E(combined_network)$color <- recode(E(combined_network)$edge_type,
+                                    C = "darkblue", S = "green", D = "darkred"
+)
+jpeg(file='Diff_Net_Anal.jpeg', width=1000, height=1000, res=200)
+plot(combined_network, layout = layout,
+     vertex.size = 3, edge.width = 2, vertex.label.cex = 0.001)
+dev.off()
+
+# find network's hub genes
+d_network_t <- table(c(d_frame$Gene1, d_frame$Gene2))
+hub_gene <- as.numeric(names(d_network_t)[which.max(d_network_t)])
+print(d_gene$GeneSymbol[hub_gene])
 
 
+d_genes <- as.numeric(union(d_frame$Gene1, d_frame$Gene2))
+s_genes <- as.numeric(union(s_frame$Gene1, s_frame$Gene2))
 
-
-quit(save="yes")
-
-
-
+# =======================
+# TODO
 #========================
-# WCGNA
-# https://horvath.genetics.ucla.edu/html/CoexpressionNetwork/Rpackages/WGCNA/Tutorials/
+# GGM using d_genes
 #========================
-# Choose a set of soft-thresholding powers
-powers = c(c(1:10), seq(from = 12, to=20, by=2))
 
-# Call the network topology analysis function
-sft = pickSoftThreshold(d_express_top, powerVector = powers, verbose = 5)
 
-# Plot the results:
-sizeGrWindow(9, 5)
-par(mfrow = c(1,2))
-cex1 = 0.
+# =======================
+# TODO
+#========================
+# GGM using s_genes
+#========================
 
-# Scale-free topology fit index as a function of the soft-thresholding power
-plot(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
-     xlab="Soft Threshold (power)",ylab="Scale Free Topology Model Fit,signed R^2",type="n",
-     main = paste("Scale independence"))
-text(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
-     labels=powers,cex=cex1,col="red")
-abline(h=0.90,col="red")
 
-# Mean connectivity as a function of the soft-thresholding power
-plot(sft$fitIndices[,1], sft$fitIndices[,5],
-     xlab="Soft Threshold (power)",ylab="Mean Connectivity", type="n",
-     main = paste("Mean connectivity"))
-text(sft$fitIndices[,1], sft$fitIndices[,5], labels=powers, cex=cex1,col="red")
-net = blockwiseModules(d_express_top, power = 6,
-                       TOMType = "unsigned", minModuleSize = 30,
-                       reassignThreshold = 0, mergeCutHeight = 0.25,
-                       numericLabels = TRUE, pamRespectsDendro = FALSE,
-                       saveTOMs = TRUE,
-                       saveTOMFileBase = "NeuralBalstomaTOM", 
-                       verbose = 3)
-
-sizeGrWindow(12, 9)
-# Convert labels to colors for plotting
-mergedColors = labels2colors(net$colors)
-
-# Plot the dendrogram and the module colors underneath
-plotDendroAndColors(net$dendrograms[[1]], mergedColors[net$blockGenes[[1]]],
-                    "Module colors",
-                    dendroLabels = FALSE, hang = 0.03,
-                    addGuide = TRUE, guideHang = 0.05)
-
-moduleLabels = net$colors
-moduleColors = labels2colors(net$colors)
-MEs = net$MEs;
-geneTree = net$dendrograms[[1]];
-save(MEs, moduleLabels, moduleColors, geneTree, 
-     file = "network.RData")
 
 
 
