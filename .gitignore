@@ -3,4 +3,5 @@
 *.RData
 *.Ruserdata
 *.jpeg
+*~
 .DS_Store
