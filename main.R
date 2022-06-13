@@ -24,6 +24,7 @@ library(igraph)
 library(glue)
 library(dplyr)
 set.seed(45394534)
+setwd('/Users/suminlee/Desktop/Probability_Graph_Model/term_project/PGM_project')
 
 # download .gz file and load the data
 gse49710 <- getGEO("GSE49710",GSEMatrix=TRUE)[[1]]
@@ -146,23 +147,23 @@ top_n_min_importance <- head(sorted_gene$x, n= top_n_min)
 #========================
 # top 1000 genes
 #========================
-d_express_topn <- d_express_unique[c(top_n_id),]
+#d_express_topn <- d_express_unique[c(top_n_id),]
 
 # covariance matrix
-topn_cov_mat <- cov(t(d_express_topn))
+#topn_cov_mat <- cov(t(d_express_topn))
 
 # glasso package
-if (file.exists("topn_inv_cov.RData")){
-  load("topn_inv_cov.RData")
-} else {
-  topn_inv_cov <- glasso(topn_cov_mat, rho=0.1, nobs=length(risk))
-  save(topn_inv_cov,file="topn_inv_cov.RData")
-}
+#if (file.exists("topn_inv_cov.RData")){
+#  load("topn_inv_cov.RData")
+#} else {
+#  topn_inv_cov <- glasso(topn_cov_mat, rho=0.1, nobs=length(risk))
+#  save(topn_inv_cov,file="topn_inv_cov.RData")
+#}
 # visualize inverse covariance matrix's zero pattern up to top100 genes
 # more than 400 dimension too mash
-jpeg(file='topn_inv_cov.jpeg', width=1000, height=1000, res=200)
-plot(topn_inv_cov$wi[1:200,1:200], border=NA) 
-dev.off()
+#jpeg(file='topn_inv_cov.jpeg', width=1000, height=1000, res=200)
+#plot(topn_inv_cov$wi[1:200,1:200], border=NA) 
+#dev.off()
 
 
 #========================
@@ -183,15 +184,15 @@ dev.off()
 #========================
 # low-risk group
 # top 1000
-top1000_lowrisk <- low_risk_express[c(top_n_id),1: low_train_size]
-top1000_lowrisk_cov <- cov(t(top1000_lowrisk))
-if (file.exists("top1000_lowrisk_inv_cov.RData")){
-  load("top1000_lowrisk_inv_cov.RData")
-} else {
-  top1000_lowrisk_inv_cov <- glasso(top1000_lowrisk_cov, rho=0.1, nobs=low_train_size);
-  save(top1000_lowrisk_inv_cov, file="top1000_lowrisk_inv_cov.RData");
-}
-print(top1000_lowrisk_inv_cov$loglik)
+#top1000_lowrisk <- low_risk_express[c(top_n_id),1: low_train_size]
+#top1000_lowrisk_cov <- cov(t(top1000_lowrisk))
+#if (file.exists("top1000_lowrisk_inv_cov.RData")){
+#  load("top1000_lowrisk_inv_cov.RData")
+#} else {
+#  top1000_lowrisk_inv_cov <- glasso(top1000_lowrisk_cov, rho=0.1, nobs=low_train_size);
+#  save(top1000_lowrisk_inv_cov, file="top1000_lowrisk_inv_cov.RData");
+#}
+#print(top1000_lowrisk_inv_cov$loglik)
 
 # top 140
 top140_lowrisk <- low_risk_express[c(top_n_min_id),1: low_train_size]
@@ -207,15 +208,15 @@ print(top140_lowrisk_inv_cov$loglik)
 
 # high-risk group
 # top 1000
-top1000_highrisk <- high_risk_express[c(top_n_id),1:high_train_size]
-top1000_highrisk_cov <- cov(t(top1000_highrisk))
-if (file.exists("top1000_highrisk_inv_cov.RData")){
-  load("top1000_highrisk_inv_cov.RData")
-} else {
-  top1000_highrisk_inv_cov <- glasso(top1000_highrisk_cov, rho=0.1, nobs=high_train_size);
-  save(top1000_highrisk_inv_cov, file="top1000_highrisk_inv_cov.RData");
-}
-print(top1000_highrisk_inv_cov$loglik)
+#top1000_highrisk <- high_risk_express[c(top_n_id),1:high_train_size]
+#top1000_highrisk_cov <- cov(t(top1000_highrisk))
+#if (file.exists("top1000_highrisk_inv_cov.RData")){
+#  load("top1000_highrisk_inv_cov.RData")
+#} else {
+#  top1000_highrisk_inv_cov <- glasso(top1000_highrisk_cov, rho=0.1, nobs=high_train_size);
+#  save(top1000_highrisk_inv_cov, file="top1000_highrisk_inv_cov.RData");
+#}
+#print(top1000_highrisk_inv_cov$loglik)
 
 # top 140
 top140_highrisk <- high_risk_express[c(top_n_min_id),1:high_train_size]
@@ -314,8 +315,8 @@ ECE <- function(pred, label, file_name){
   for (i in 1:n_bin) {
     cond <- (breaks[i] <= pred) & (pred < breaks[i+1])
     if (sum(cond) != 0){
-      bins[i] <- mean(pred[cond]);
-      ece <- ece + abs(pr[i]-bins[i])*count[i]/N;
+      bins[i] <- mean(label[cond]);
+      ece <- ece + abs(mean(pred[cond])-bins[i])*count[i]/N;
     }
   }
   
@@ -331,13 +332,34 @@ ECE <- function(pred, label, file_name){
   return(ece)
 }
 
+## RF
 rf_pred <- predict(rf, t(test_set))
 rf_pred_prob <- predict(rf, t(test_set),"prob")[,2]
+
+## histogram
 jpeg(file='rf_pred_hist.jpeg', width=1000, height=1000, res=200)
-hist(rf_pred_prob)
+ax = pretty(0:10,n=10)
+rf_pred_hist <- hist(rf_pred_prob, breaks=ax, plot=FALSE)
+rf_pred_hist_positive <- hist(rf_pred_prob[test_risk==1], breaks=ax, plot=FALSE)
+plot(rf_pred_hist)
+plot(rf_pred_hist_positive,add=TRUE)
+legend("topright",c("non-HR","HR"),col=c("grey","darkgrey"),lwd=6)
 dev.off()
+
 rf_ece <- ECE(rf_pred_prob, test_risk, 'Random_Foreest_ece')
 print(rf_ece)
+
+## GGM
+## histogram
+jpeg(file='ggm_pred_hist.jpeg', width=1000, height=1000, res=200)
+ax = pretty(0:10,n=10)
+ggm_pred_hist <- hist(ggm_pred_prob, breaks=ax, plot=FALSE)
+ggm_pred_hist_positive <- hist(ggm_pred_prob[test_risk==1], breaks=ax, plot=FALSE)
+plot(ggm_pred_hist)
+plot(ggm_pred_hist_positive,add=TRUE)
+legend("topright",c("non-HR","HR"),col=c("grey","darkgrey"),lwd=6)
+dev.off()
+
 ggm_ece <- ECE(ggm_pred_prob, test_risk, 'GGM_ece')
 print(ggm_ece)
 
