@@ -338,11 +338,11 @@ rf_pred_prob <- predict(rf, t(test_set),"prob")[,2]
 
 ## histogram
 jpeg(file='rf_pred_hist.jpeg', width=1000, height=1000, res=200)
-ax = pretty(0:10,n=10)
+ax = pretty(0:1,n=10)
 rf_pred_hist <- hist(rf_pred_prob, breaks=ax, plot=FALSE)
 rf_pred_hist_positive <- hist(rf_pred_prob[test_risk==1], breaks=ax, plot=FALSE)
 plot(rf_pred_hist)
-plot(rf_pred_hist_positive,add=TRUE)
+plot(rf_pred_hist_positive,col="darkgrey",add=TRUE)
 legend("topright",c("non-HR","HR"),col=c("grey","darkgrey"),lwd=6)
 dev.off()
 
@@ -352,11 +352,11 @@ print(rf_ece)
 ## GGM
 ## histogram
 jpeg(file='ggm_pred_hist.jpeg', width=1000, height=1000, res=200)
-ax = pretty(0:10,n=10)
+ax = pretty(0:1,n=10)
 ggm_pred_hist <- hist(ggm_pred_prob, breaks=ax, plot=FALSE)
 ggm_pred_hist_positive <- hist(ggm_pred_prob[test_risk==1], breaks=ax, plot=FALSE)
 plot(ggm_pred_hist)
-plot(ggm_pred_hist_positive,add=TRUE)
+plot(ggm_pred_hist_positive,col="darkgrey",add=TRUE)
 legend("topright",c("non-HR","HR"),col=c("grey","darkgrey"),lwd=6)
 dev.off()
 
